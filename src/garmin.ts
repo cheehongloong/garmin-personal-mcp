@@ -145,8 +145,13 @@ export class GarminClient {
     this.apiKey = options.apiKey.trim();
     this.baseUrl = normalizeBaseUrl(options.baseUrl);
     this.kv = options.kv;
-    this.fetchFn = options.fetchFn ?? fetch;
+    this.fetchFn = options.fetchFn ?? ((input, init) => fetch(input, init));
     this.nowMs = options.nowMs ?? Date.now;
+  }
+
+  private callFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+    const fetchFn = this.fetchFn;
+    return fetchFn(input, init);
   }
 
   private getKeyHash(): Promise<string> {
@@ -220,7 +225,7 @@ export class GarminClient {
 
     let response: Response;
     try {
-      response = await this.fetchFn(`${this.baseUrl}${TOKEN_ENDPOINT_PATH}`, {
+      response = await this.callFetch(`${this.baseUrl}${TOKEN_ENDPOINT_PATH}`, {
         method: "POST",
         headers: {
           Authorization: `ApiKey ${this.apiKey}`,
@@ -279,7 +284,7 @@ export class GarminClient {
 
   private async executeGet(fullPath: string, token: string): Promise<Response> {
     try {
-      return await this.fetchFn(`${this.baseUrl}${fullPath}`, {
+      return await this.callFetch(`${this.baseUrl}${fullPath}`, {
         method: "GET",
         headers: {
           Authorization: `Bearer ${token}`,

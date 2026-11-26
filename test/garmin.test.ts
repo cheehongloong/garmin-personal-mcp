@@ -307,4 +307,28 @@ describe("GarminClient", () => {
       /GARMIN_PERSONAL_API_KEY/,
     );
   });
+
+  it("invokes fetch without binding `this` to GarminClient (Cloudflare Workers compatibility)", async () => {
+    const jwt = makeFakeJwt(BASE_NOW_SEC + 86_400);
+    let calls = 0;
+    const strictFetch = function (this: unknown) {
+      if (this !== undefined && this !== globalThis) {
+        throw new TypeError("Illegal invocation");
+      }
+      calls++;
+      return Promise.resolve(
+        calls === 1 ? new Response(jwt, { status: 200 }) : Response.json({ ok: true }),
+      );
+    } as unknown as typeof fetch;
+
+    const client = new GarminClient({
+      apiKey: "synthetic-api-key",
+      fetchFn: strictFetch,
+      nowMs: () => BASE_NOW_MS,
+    });
+
+    await expect(client.get("/userprofile-service/userprofile/settings")).resolves.toEqual({
+      ok: true,
+    });
+  });
 });
