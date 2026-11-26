@@ -90,7 +90,7 @@ function makeTestHarness(
 }
 
 describe("Garmin MCP tools", () => {
-  it("registers all 15 read-only Garmin tools", async () => {
+  it("registers all 14 read-only Garmin tools", async () => {
     const { rpc } = makeTestHarness(() => Response.json({}));
     const response = await rpc("tools/list");
     const tools = response.result?.tools ?? [];
@@ -100,7 +100,6 @@ describe("Garmin MCP tools", () => {
       [
         "get_activity",
         "get_activity_splits",
-        "get_activity_weather",
         "get_body_battery",
         "get_daily_summaries",
         "get_fitness_age",
@@ -160,11 +159,6 @@ describe("Garmin MCP tools", () => {
       search: "",
     });
 
-    expect(await callTool("get_activity_weather", { activity_id: 123456 })).toEqual({
-      path: "/activity-service/activity/123456/weather",
-      search: "",
-    });
-
     // Asia/Tokyo at 2026-03-10T18:30:00Z is 2026-03-11 -> default 7-day range is 2026-03-05..2026-03-11
     expect(await callTool("get_sleep")).toEqual({
       path: "/sleep-service/sleep/dailySleep",
@@ -216,7 +210,7 @@ describe("Garmin MCP tools", () => {
       search: "",
     });
 
-    expect(requests.length).toBeGreaterThanOrEqual(15);
+    expect(requests.length).toBeGreaterThanOrEqual(14);
   });
 
   it("validates dates, limits, activity IDs, and date ordering cleanly", async () => {
@@ -249,18 +243,16 @@ describe("Garmin MCP tools", () => {
   });
 
   it("returns readable error text on Garmin HTTP failures without throwing raw", async () => {
-    const { rpc } = makeTestHarness(
-      () => new Response("Endpoint not enabled for Personal API", { status: 404 }),
-    );
+    const { rpc } = makeTestHarness(() => new Response("Activity not found", { status: 404 }));
 
     const res = await rpc("tools/call", {
-      name: "get_activity_weather",
+      name: "get_activity",
       arguments: { activity_id: 98765 },
     });
 
     expect(res.result?.isError).toBe(true);
     expect(res.result?.content?.[0]?.text).toBe(
-      "Garmin API error 404 on GET /activity-service/activity/98765/weather: Endpoint not enabled for Personal API",
+      "Garmin API error 404 on GET /activity-service/activity/98765: Activity not found",
     );
   });
 

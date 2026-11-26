@@ -166,17 +166,8 @@ export function registerGarminTools(server: McpServer, options: RegisterGarminTo
       runGarminCall(() => client.get(`/activity-service/activity/${activity_id}/workouts`)),
   );
 
-  server.registerTool(
-    "get_activity_weather",
-    {
-      description:
-        "Weather recorded for one Garmin activity. May not be exposed by the Garmin Personal API — returns a readable error message if rejected.",
-      inputSchema: activityIdInputSchema,
-      annotations: READ_ONLY_ANNOTATIONS,
-    },
-    async ({ activity_id }) =>
-      runGarminCall(() => client.get(`/activity-service/activity/${activity_id}/weather`)),
-  );
+  // Note: /activity-service/activity/{id}/weather is intentionally omitted because
+  // Garmin's Personal API returns 404 NOT_FOUND for that endpoint.
 
   // ---------- Recovery & health ----------
 
