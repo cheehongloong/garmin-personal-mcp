@@ -1,0 +1,21 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "garmin-personal-mcp",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-11",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "vars": {
+    // REQUIRED: Set to your exact GitHub username. The Worker fails closed if unset.
+    "ALLOWED_GITHUB_LOGIN": "",
+    // IANA timezone used for "today" and default date ranges (e.g. "America/New_York").
+    "TIMEZONE": "UTC",
+    // Official Garmin Connect Personal API base URL.
+    "GARMIN_BASE_URL": "https://personal.connectapi.garmin.com"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+    }
+  ]
+}

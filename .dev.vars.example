@@ -1,0 +1,20 @@
+# Copy this file to .dev.vars for local development (`wrangler dev`).
+# Never commit .dev.vars or real credentials.
+
+# Required: your Garmin Connect Personal API key
+GARMIN_PERSONAL_API_KEY=your-garmin-personal-api-key
+
+# Required: GitHub OAuth App credentials
+# Local dev callback URL: http://localhost:8787/callback
+GITHUB_CLIENT_ID=your-github-oauth-client-id
+GITHUB_CLIENT_SECRET=your-github-oauth-client-secret
+
+# Required: random 32+ byte hex secret for signing OAuth cookies/state
+# Generate with: openssl rand -hex 32
+COOKIE_ENCRYPTION_KEY=replace-with-openssl-rand-hex-32
+
+# Required: exact GitHub username allowed to authorize (fails closed if unset)
+ALLOWED_GITHUB_LOGIN=your-github-username
+
+# Optional: IANA timezone for "today" and default date ranges (default: UTC)
+TIMEZONE=UTC

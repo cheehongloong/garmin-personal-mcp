@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Wrangler & local secrets
+.wrangler/
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+
+# Build & test outputs
+dist/
+coverage/
+worker-configuration.d.ts
+
+# OS & editor files
+.DS_Store
+*.log
