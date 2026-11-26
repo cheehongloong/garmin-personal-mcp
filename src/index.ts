@@ -1,8 +1,9 @@
 import { OAuthProvider } from "@cloudflare/workers-oauth-provider";
 import { McpServer } from "@modelcontextprotocol/server";
-import { createMcpHandler, getMcpAuthContext } from "agents/mcp/server";
-import { z } from "zod";
+import { createMcpHandler } from "agents/mcp/server";
 import { githubAuthHandler, isAllowedGitHubLogin } from "./auth/github.js";
+import { GarminClient } from "./garmin.js";
+import { registerGarminTools } from "./tools.js";
 import type { AuthProps, Env } from "./types.js";
 
 const SERVER_NAME = "garmin-personal-mcp";
@@ -25,37 +26,16 @@ export function createMcpServer(env: Env): McpServer {
     version: SERVER_VERSION,
   });
 
-  // Temporary auth verification tool until the Garmin Connect tools are added.
-  server.registerTool(
-    "get_auth_status",
-    {
-      description:
-        "Verify that OAuth authentication and MCP transport are working. Returns the authenticated GitHub login and configured timezone.",
-      inputSchema: z.object({}),
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: false,
-      },
-    },
-    async () => {
-      const auth = getMcpAuthContext();
-      const props = auth?.props as Partial<AuthProps> | undefined;
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              status: "authenticated",
-              githubLogin: props?.githubLogin ?? null,
-              timezone: env.TIMEZONE?.trim() || "UTC",
-            }),
-          },
-        ],
-      };
-    },
-  );
+  const client = new GarminClient({
+    apiKey: env.GARMIN_PERSONAL_API_KEY ?? "",
+    baseUrl: env.GARMIN_BASE_URL,
+    kv: env.OAUTH_KV,
+  });
+
+  registerGarminTools(server, {
+    client,
+    timeZone: env.TIMEZONE,
+  });
 
   return server;
 }

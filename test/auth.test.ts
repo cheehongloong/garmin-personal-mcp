@@ -504,8 +504,8 @@ describe("MCP API handler defense-in-depth and resource resolution", () => {
     expect(mismatchRes.status).toBe(403);
   });
 
-  it("serves MCP tools/call get_auth_status for allowlisted user", async () => {
-    const initReq = new Request("http://localhost:8787/mcp", {
+  it("serves MCP tools/list for allowlisted user", async () => {
+    const listReq = new Request("http://localhost:8787/mcp", {
       method: "POST",
       headers: {
         Host: "localhost:8787",
@@ -516,20 +516,20 @@ describe("MCP API handler defense-in-depth and resource resolution", () => {
       body: JSON.stringify({
         jsonrpc: "2.0",
         id: 1,
-        method: "tools/call",
-        params: { name: "get_auth_status", arguments: {} },
+        method: "tools/list",
+        params: {},
       }),
     });
 
     const res = await mcpApiHandler.fetch(
-      initReq,
+      listReq,
       makeEnv({ ALLOWED_GITHUB_LOGIN: "runner-owner", TIMEZONE: "UTC" }),
       makeExecutionContext({ githubLogin: "Runner-Owner", githubId: 42 }),
     );
 
     expect(res.status).toBe(200);
     const body = await res.text();
-    expect(body).toContain("authenticated");
-    expect(body).toContain("Runner-Owner");
+    expect(body).toContain("list_activities");
+    expect(body).toContain("recovery_snapshot");
   });
 });
