@@ -1,19 +1,38 @@
 # garmin-personal-mcp
 
-A self-hosted, single-user remote [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server for reading **your own** Garmin Connect data on Cloudflare Workers — designed for Claude (web and mobile) and any other Streamable HTTP + OAuth 2.1 MCP client.
+A private, self-hosted remote [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that lets Claude (on web and mobile) read **your own** Garmin Connect data via Garmin's official Personal API.
 
 > **Disclaimer:** Not affiliated with or endorsed by Garmin. Garmin and Garmin Connect are trademarks of Garmin Ltd. or its subsidiaries.
->
-> **Single-user only:** Garmin's Personal API is strictly for accessing your own data, not for operating a multi-user or hosted SaaS service. Each person deploys their own Worker with their own Garmin Personal API key and GitHub OAuth App.
+
+---
+
+## Not technical? Read here — setup is easy (and free)
+
+You **don't need to know how to code**, edit config files, or manage a server.
+
+All you need are:
+1. A free **GitHub** account
+2. A free **Cloudflare** account
+3. Your **Garmin Connect** account
+
+If you use an AI coding assistant (**Claude Code**, **Antigravity**, **Cursor**, **Codex**, etc.), it can handle almost the entire setup for you in about 5 minutes — just paste this prompt:
+
+```text
+Clone https://github.com/cheehongloong/garmin-personal-mcp and follow AGENTS.md to deploy my personal Garmin MCP server to Cloudflare Workers. Handle all terminal steps yourself and guide me one click at a time whenever I need to click something in the browser.
+```
+
+You will only need to do **4 quick browser clicks** yourself (logging into Cloudflare, clicking "Create Key" in Garmin Connect, clicking "Register application" in GitHub, and pasting your final URL into `claude.ai`). Your assistant takes care of everything else.
+
+---
+
+## Why self-host instead of using a hosted app?
+
+1. **Your Garmin Personal API key stays yours:** Your Garmin Personal API key unlocks read access to your sleep, heart rate, HRV, stress, and GPS workout history. When you self-host on your own free Cloudflare account, **no third-party developer, startup, or shared server ever touches your API key or your health data**.
+2. **Official Garmin Personal API (no password scraping):** Garmin's Personal API is built specifically for individuals reading *their own* data — not for multi-user SaaS apps. Unlike unofficial libraries that ask for your Garmin password and break whenever Garmin updates its login screen, this uses Garmin's official API key.
+3. **Locked to one account, runs for free:** Access is gated by your own GitHub login (`ALLOWED_GITHUB_LOGIN`) — anyone else trying to sign in gets rejected immediately — and everything runs comfortably on Cloudflare's Free tier.
+4. **Privacy-first by default:** Zero analytics, zero telemetry, and zero logging of tokens or health payloads. Before responses reach Claude, the server automatically strips your name, Garmin owner/profile IDs, profile photo links, device IDs, and exact start/end GPS coordinates, trims unused fields and raw per-minute arrays, adds an explicit `units` map + ready-made pace strings, and normalizes unworn sleep nights and Garmin's `-1` no-data stress sentinels to `{ date, recorded: false }`.
 
 ![Synthetic example of Claude answering a training recovery question using garmin-personal-mcp](docs/recovery-example.svg)
-
-## Why this server?
-
-- **Remote & works on mobile:** Runs on Cloudflare Workers (Free tier suffices) over **Streamable HTTP** (`createMcpHandler`), so it works from `claude.ai` on desktop and the Claude mobile app.
-- **Official Garmin Personal API:** Uses Garmin's official read-only Personal API (`personal.connectapi.garmin.com`) — no reverse-engineered logins, session scraping, or unofficial libraries.
-- **Locked down to one user:** Wrapped with `@cloudflare/workers-oauth-provider` (OAuth 2.1 + PKCE `S256` + Dynamic Client Registration + Client ID Metadata Documents) delegating sign-in to GitHub OAuth with a **fail-closed single-user allowlist** (`ALLOWED_GITHUB_LOGIN`).
-- **Private & context-friendly by design:** Zero analytics, zero telemetry, zero logging of Garmin tokens or health payloads. Responses automatically strip personal and hardware identifiers (full name, display name, Garmin owner/profile IDs, profile image URLs, device IDs, and exact start/end GPS coordinates), trim unused fields and raw per-minute arrays, include an explicit `units` map and ready-made pace strings on activities, and normalize unworn sleep nights and Garmin's `-1` no-data stress sentinels to `{ date, recorded: false }`.
 
 ---
 
@@ -32,14 +51,18 @@ A self-hosted, single-user remote [Model Context Protocol (MCP)](https://modelco
 
 ## Deploy
 
-### Option A: One-click Deploy to Cloudflare
+### Option A: Hands-off setup with an AI agent (Recommended for non-technical users)
+
+Paste the prompt in [Not technical? Read here](#not-technical-read-here--setup-is-easy-and-free) above into Claude Code, Antigravity, Cursor, or Codex. It follows [AGENTS.md](AGENTS.md) step-by-step and verifies your live server automatically.
+
+### Option B: One-click Deploy to Cloudflare
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/cheehongloong/garmin-personal-mcp)
 
 1. Click the button above to clone the repo into your GitHub account, provision the `OAUTH_KV` Workers KV namespace, and deploy your Worker (`https://garmin-personal-mcp.<your-subdomain>.workers.dev`).
 2. Continue to [Create a GitHub OAuth App](#create-a-github-oauth-app) and [Configure secrets and vars](#configure-secrets-and-vars) below.
 
-### Option B: Manual deploy with Wrangler
+### Option C: Manual deploy with Wrangler
 
 Requires **Node.js 24+** and **Yarn 4** (`corepack enable`).
 
@@ -57,7 +80,7 @@ Create a KV namespace for OAuth state and Garmin bearer-token caching:
 yarn wrangler kv namespace create OAUTH_KV
 ```
 
-Update `wrangler.jsonc` with:
+Copy `wrangler.jsonc` to a gitignored `wrangler.local.jsonc` (or update your fork's `wrangler.jsonc`) with:
 - Your new `OAUTH_KV` namespace `id`
 - `ALLOWED_GITHUB_LOGIN`: your exact GitHub username (the Worker fails closed if empty)
 - `TIMEZONE`: your IANA timezone (e.g. `"America/New_York"`, `"Europe/London"`, `"Asia/Tokyo"`) so "today" and 7-day defaults match your local calendar
@@ -65,7 +88,7 @@ Update `wrangler.jsonc` with:
 Deploy:
 
 ```sh
-yarn deploy
+yarn wrangler deploy -c wrangler.local.jsonc
 ```
 
 Note the deployed Worker URL printed by Wrangler, e.g. `https://garmin-personal-mcp.<your-subdomain>.workers.dev`.
@@ -90,19 +113,19 @@ Note the deployed Worker URL printed by Wrangler, e.g. `https://garmin-personal-
 
 ### Secrets
 
-Set these in the Cloudflare Dashboard (**Workers & Pages → `garmin-personal-mcp` → Settings → Variables and Secrets**) or with Wrangler:
+Set these in the Cloudflare Dashboard (**Workers & Pages → `<your-worker>` → Settings → Variables and Secrets**) or with Wrangler (note: pass the **secret name**, and paste the value when prompted):
 
 ```sh
-yarn wrangler secret put GARMIN_PERSONAL_API_KEY
-yarn wrangler secret put GITHUB_CLIENT_ID
-yarn wrangler secret put GITHUB_CLIENT_SECRET
+yarn wrangler secret put GARMIN_PERSONAL_API_KEY -c wrangler.local.jsonc
+yarn wrangler secret put GITHUB_CLIENT_ID -c wrangler.local.jsonc
+yarn wrangler secret put GITHUB_CLIENT_SECRET -c wrangler.local.jsonc
 
 # Generate a 32-byte random hex key for remembering consent across browser sessions:
 openssl rand -hex 32
-yarn wrangler secret put COOKIE_ENCRYPTION_KEY
+yarn wrangler secret put COOKIE_ENCRYPTION_KEY -c wrangler.local.jsonc
 ```
 
-### Vars (`wrangler.jsonc` or Cloudflare Dashboard)
+### Vars (`wrangler.local.jsonc` / `wrangler.jsonc` or Cloudflare Dashboard)
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
@@ -125,12 +148,12 @@ If you used the **Deploy to Cloudflare** button, set `ALLOWED_GITHUB_LOGIN` and 
    ```text
    https://<worker-name>.<your-subdomain>.workers.dev/mcp
    ```
-4. Leave the OAuth client fields on automatic registration (Dynamic Client Registration / CIMD are both enabled).
+4. Leave the OAuth client fields on automatic registration (Dynamic Client Registration and Client ID Metadata Documents are both enabled).
 5. Click **Connect** → review the consent screen → click **Continue with GitHub** and sign in with your allowlisted GitHub account.
 
 ### On mobile (Claude iOS / Android app)
 
-Custom connectors added on `claude.ai` sync automatically to the Claude mobile app on the same account. Open a new chat on your phone, ensure the **Garmin Connect Personal MCP** connector is enabled in the chat's tools/connectors menu, and ask about your training or recovery.
+Custom connectors added on `claude.ai` sync automatically to the Claude mobile app on the same account. Open a new chat on your phone, ensure the connector is enabled in the chat's tools/connectors menu, and ask about your training or recovery.
 
 *(Because this server implements standard MCP Streamable HTTP + OAuth 2.1 + PKCE + DCR + CIMD, it also works with other compatible remote MCP clients such as MCP Inspector or Gemini Custom Apps where available.)*
 
@@ -142,19 +165,19 @@ All 14 tools are strictly **read-only**. Range tools default to the last 7 days 
 
 | Tool | Description |
 |---|---|
-| `list_activities` | List activities newest first (`limit` 1–100, `start`, optional `start_date`, `end_date`, `activity_type`, `activity_sub_type`). |
-| `get_activity` | Full summary for one activity by `activity_id` (distance, time, pace, HR, cadence, training effect). |
+| `list_activities` | List activities newest first (`limit` 1–100, `start`, optional `start_date`, `end_date`, `activity_type`, `activity_sub_type`). Includes a `units` map and ready-made pace/speed. |
+| `get_activity` | Full summary for one activity by `activity_id` (distance, time, ready-made pace, HR, cadence, power, training effect, split summaries) with a `units` map. |
 | `get_activity_splits` | Laps/splits and workout steps for one activity. |
-| `get_sleep` | Detailed sleep for one night (stages, score, duration). Defaults to today. |
-| `get_sleep_range` | Daily sleep summaries across a date range (default last 7 days). |
+| `get_sleep` | Detailed sleep for one night (stages, score, duration). Returns `{date, recorded: false}` if unworn. Defaults to today. |
+| `get_sleep_range` | Daily sleep summaries across a date range (default last 7 days). Unworn nights return `{date, recorded: false}`. |
 | `get_hrv` | Daily HRV summaries across a date range (default last 7 days). |
-| `get_body_battery` | Daily Body Battery reports across a date range (default last 7 days). |
-| `get_stress` | Daily stress stats across a date range (default last 7 days). |
+| `get_body_battery` | Daily Body Battery reports (charged, drained, daily high/low/start/end, feedback events; default last 7 days). |
+| `get_stress` | Daily stress stats across a date range (default last 7 days). Negative `-1` no-data sentinels are normalized. |
 | `get_daily_summaries` | Daily steps, calories, resting HR, and intensity minutes (default last 7 days). |
-| `get_heart_rate_day` | All-day heart rate curve and resting HR for one date (default today). |
+| `get_heart_rate_day` | Daily resting/min/max heart rate plus compact hourly min/avg/max buckets (default today). |
 | `get_heart_rate_zones` | Your configured Garmin heart rate zones. |
 | `get_fitness_age` | Garmin fitness age for a date (default today). |
-| `get_profile` | Profile settings (units, sleep schedule, etc.). |
+| `get_profile` | Non-identifying profile preferences (units, time format, sleep schedule, training days). |
 | `recovery_snapshot` | Parallel fetch of sleep summaries, HRV, Body Battery, and stress for the last `days` (default 7). |
 
 ### Example prompts
@@ -173,11 +196,11 @@ All 14 tools are strictly **read-only**. Range tools default to the last 7 days 
 1. Delete the old key and create a new one in Garmin Connect (**Account Settings → Personal API Key**).
 2. Update the Worker secret:
    ```sh
-   yarn wrangler secret put GARMIN_PERSONAL_API_KEY
+   yarn wrangler secret put GARMIN_PERSONAL_API_KEY -c wrangler.local.jsonc
    ```
 3. Cached Garmin bearer tokens in KV are bound to a hash of the API key and invalidate automatically on the next request. To clear the cached entry immediately:
    ```sh
-   yarn wrangler kv key delete --binding OAUTH_KV --remote garmin:bearer_token
+   yarn wrangler kv key delete --binding OAUTH_KV --remote garmin:bearer_token -c wrangler.local.jsonc
    ```
 
 ### Revoke MCP access
@@ -189,7 +212,7 @@ All 14 tools are strictly **read-only**. Range tools default to the last 7 days 
 ### Delete the deployment
 
 ```sh
-yarn wrangler delete
+yarn wrangler delete -c wrangler.local.jsonc
 ```
 
 Then delete the `OAUTH_KV` namespace in the Cloudflare Dashboard (**Storage & Databases → KV**), delete your GitHub OAuth App, and optionally delete your Garmin Personal API key.
