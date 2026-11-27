@@ -122,7 +122,7 @@ describe("Garmin MCP tools", () => {
 
   it("maps every single tool to the exact Garmin Personal API path and query params", async () => {
     const { rpc, requests } = makeTestHarness((url) =>
-      Response.json({ path: url.pathname, search: url.search }),
+      Response.json({ path: url.pathname, search: url.search || "(none)" }),
     );
 
     const callTool = async (name: string, args: Record<string, unknown> = {}) => {
@@ -151,12 +151,12 @@ describe("Garmin MCP tools", () => {
 
     expect(await callTool("get_activity", { activity_id: 123456 })).toEqual({
       path: "/activity-service/activity/123456",
-      search: "",
+      search: "(none)",
     });
 
     expect(await callTool("get_activity_splits", { activity_id: 123456 })).toEqual({
       path: "/activity-service/activity/123456/workouts",
-      search: "",
+      search: "(none)",
     });
 
     // Asia/Tokyo at 2026-03-10T18:30:00Z is 2026-03-11 -> default 7-day range is 2026-03-05..2026-03-11
@@ -172,7 +172,7 @@ describe("Garmin MCP tools", () => {
 
     expect(await callTool("get_hrv")).toEqual({
       path: "/hrv-service/hrv/daily/2026-03-05/2026-03-11",
-      search: "",
+      search: "(none)",
     });
 
     expect(await callTool("get_body_battery")).toEqual({
@@ -182,7 +182,7 @@ describe("Garmin MCP tools", () => {
 
     expect(await callTool("get_stress")).toEqual({
       path: "/usersummary-service/stats/stress/daily/2026-03-05/2026-03-11",
-      search: "",
+      search: "(none)",
     });
 
     expect(await callTool("get_daily_summaries")).toEqual({
@@ -197,17 +197,17 @@ describe("Garmin MCP tools", () => {
 
     expect(await callTool("get_heart_rate_zones")).toEqual({
       path: "/biometric-service/heartRateZones/v2",
-      search: "",
+      search: "(none)",
     });
 
     expect(await callTool("get_fitness_age")).toEqual({
       path: "/fitnessage-service/fitnessage/v2/2026-03-11",
-      search: "",
+      search: "(none)",
     });
 
     expect(await callTool("get_profile")).toEqual({
       path: "/userprofile-service/userprofile/settings",
-      search: "",
+      search: "(none)",
     });
 
     expect(requests.length).toBeGreaterThanOrEqual(14);

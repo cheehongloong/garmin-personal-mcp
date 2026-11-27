@@ -2,6 +2,15 @@ import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { isValidIsoDate, resolveDateRange, resolveTimeZone, todayInTimeZone } from "./dates.js";
 import { formatGarminError, type GarminClient } from "./garmin.js";
+import {
+  shapeActivityDetail,
+  shapeActivityList,
+  shapeBodyBattery,
+  shapeHeartRateDay,
+  shapeProfile,
+  shapeSleepDay,
+  stripPiiAndNoise,
+} from "./sanitize.js";
 
 const READ_ONLY_ANNOTATIONS = {
   readOnlyHint: true,
@@ -65,10 +74,13 @@ function errorText(message: string): ToolResult {
   };
 }
 
-async function runGarminCall(fn: () => Promise<unknown>): Promise<ToolResult> {
+async function runGarminCall(
+  fn: () => Promise<unknown>,
+  transform: (data: unknown) => unknown = stripPiiAndNoise,
+): Promise<ToolResult> {
   try {
     const data = await fn();
-    return okJson(data);
+    return okJson(transform(data));
   } catch (error) {
     return errorText(formatGarminError(error));
   }
@@ -96,7 +108,7 @@ export function registerGarminTools(server: McpServer, options: RegisterGarminTo
     "list_activities",
     {
       description:
-        "List Garmin Connect activities, newest first. Dates are YYYY-MM-DD. Optional filters include activity_type (e.g. 'running') and activity_sub_type.",
+        "List Garmin Connect activities, newest first. Returns trimmed summaries (type, distance, duration, pace/speed, HR, cadence, power, elevation, training load) with personal/device IDs stripped. Dates are YYYY-MM-DD.",
       inputSchema: z.object({
         limit: z
           .number()
@@ -130,15 +142,17 @@ export function registerGarminTools(server: McpServer, options: RegisterGarminTo
         const rangeError = validateRangeOrder(start_date, end_date);
         if (rangeError) return errorText(rangeError);
       }
-      return runGarminCall(() =>
-        client.get("/activitylist-service/activities/search/activities", {
-          start,
-          limit,
-          startDate: start_date,
-          endDate: end_date,
-          activityType: activity_type,
-          activitySubType: activity_sub_type,
-        }),
+      return runGarminCall(
+        () =>
+          client.get("/activitylist-service/activities/search/activities", {
+            start,
+            limit,
+            startDate: start_date,
+            endDate: end_date,
+            activityType: activity_type,
+            activitySubType: activity_sub_type,
+          }),
+        shapeActivityList,
       );
     },
   );
@@ -147,12 +161,15 @@ export function registerGarminTools(server: McpServer, options: RegisterGarminTo
     "get_activity",
     {
       description:
-        "Full summary of one Garmin activity: distance, time, pace, heart rate, cadence, training effect, etc.",
+        "Detailed summary of one Garmin activity (distance, time, pace, HR, cadence, power, training effect, split summaries) with personal/device metadata stripped.",
       inputSchema: activityIdInputSchema,
       annotations: READ_ONLY_ANNOTATIONS,
     },
     async ({ activity_id }) =>
-      runGarminCall(() => client.get(`/activity-service/activity/${activity_id}`)),
+      runGarminCall(
+        () => client.get(`/activity-service/activity/${activity_id}`),
+        shapeActivityDetail,
+      ),
   );
 
   server.registerTool(
@@ -175,15 +192,17 @@ export function registerGarminTools(server: McpServer, options: RegisterGarminTo
     "get_sleep",
     {
       description:
-        "Detailed sleep for one night (stages, score, duration). Defaults to today in the configured timezone.",
+        "Detailed sleep for one night (stages, score, duration, HRV, SpO2, respiration, insights). Defaults to today in the configured timezone.",
       inputSchema: singleDateInputSchema,
       annotations: READ_ONLY_ANNOTATIONS,
     },
     async ({ calendar_date }) =>
-      runGarminCall(() =>
-        client.get("/sleep-service/sleep/dailySleep", {
-          date: calendar_date ?? getToday(),
-        }),
+      runGarminCall(
+        () =>
+          client.get("/sleep-service/sleep/dailySleep", {
+            date: calendar_date ?? getToday(),
+          }),
+        shapeSleepDay,
       ),
   );
 
@@ -228,7 +247,7 @@ export function registerGarminTools(server: McpServer, options: RegisterGarminTo
     "get_body_battery",
     {
       description:
-        "Daily Body Battery reports for a date range (default last 7 days ending today in the configured timezone).",
+        "Daily Body Battery reports (charged, drained, daily high/low/start/end, feedback events) for a date range (default last 7 days).",
       inputSchema: dateRangeInputSchema,
       annotations: READ_ONLY_ANNOTATIONS,
     },
@@ -236,11 +255,13 @@ export function registerGarminTools(server: McpServer, options: RegisterGarminTo
       const { startDate, endDate } = getRange(start_date, end_date);
       const rangeError = validateRangeOrder(startDate, endDate);
       if (rangeError) return errorText(rangeError);
-      return runGarminCall(() =>
-        client.get("/wellness-service/wellness/bodyBattery/reports/daily", {
-          startDate,
-          endDate,
-        }),
+      return runGarminCall(
+        () =>
+          client.get("/wellness-service/wellness/bodyBattery/reports/daily", {
+            startDate,
+            endDate,
+          }),
+        shapeBodyBattery,
       );
     },
   );
@@ -288,15 +309,17 @@ export function registerGarminTools(server: McpServer, options: RegisterGarminTo
     "get_heart_rate_day",
     {
       description:
-        "All-day heart rate for one date, including resting HR. Defaults to today in the configured timezone.",
+        "Daily heart rate summary (resting, min, max, and hourly min/avg/max buckets) for one date. Defaults to today in the configured timezone.",
       inputSchema: singleDateInputSchema,
       annotations: READ_ONLY_ANNOTATIONS,
     },
     async ({ calendar_date }) =>
-      runGarminCall(() =>
-        client.get("/wellness-service/wellness/dailyHeartRate", {
-          date: calendar_date ?? getToday(),
-        }),
+      runGarminCall(
+        () =>
+          client.get("/wellness-service/wellness/dailyHeartRate", {
+            date: calendar_date ?? getToday(),
+          }),
+        (data) => shapeHeartRateDay(data, tz),
       ),
   );
 
@@ -326,18 +349,20 @@ export function registerGarminTools(server: McpServer, options: RegisterGarminTo
   server.registerTool(
     "get_profile",
     {
-      description: "Garmin profile settings (units, sleep times, etc.).",
+      description:
+        "Non-identifying Garmin profile preferences (units, time format, sleep schedule, training days). Personal identifiers are stripped.",
       inputSchema: emptyInputSchema,
       annotations: READ_ONLY_ANNOTATIONS,
     },
-    async () => runGarminCall(() => client.get("/userprofile-service/userprofile/settings")),
+    async () =>
+      runGarminCall(() => client.get("/userprofile-service/userprofile/settings"), shapeProfile),
   );
 
   server.registerTool(
     "recovery_snapshot",
     {
       description:
-        "One call for 'should I train hard today?': fetches sleep summaries, HRV, Body Battery, and stress in parallel for the last N days (default 7). Each section returns data or an error string.",
+        "One call for 'should I train hard today?': fetches trimmed, PII-free sleep summaries, HRV, Body Battery, and stress in parallel for the last N days (default 7). Each section returns data or an error string.",
       inputSchema: z.object({
         days: z
           .number()
@@ -351,9 +376,12 @@ export function registerGarminTools(server: McpServer, options: RegisterGarminTo
     },
     async ({ days }) => {
       const { startDate, endDate } = getRange(undefined, undefined, days);
-      const fetchSection = async (fn: () => Promise<unknown>): Promise<unknown> => {
+      const fetchSection = async (
+        fn: () => Promise<unknown>,
+        transform: (data: unknown) => unknown = stripPiiAndNoise,
+      ): Promise<unknown> => {
         try {
-          return await fn();
+          return transform(await fn());
         } catch (error) {
           return formatGarminError(error);
         }
@@ -367,11 +395,13 @@ export function registerGarminTools(server: McpServer, options: RegisterGarminTo
           }),
         ),
         fetchSection(() => client.get(`/hrv-service/hrv/daily/${startDate}/${endDate}`)),
-        fetchSection(() =>
-          client.get("/wellness-service/wellness/bodyBattery/reports/daily", {
-            startDate,
-            endDate,
-          }),
+        fetchSection(
+          () =>
+            client.get("/wellness-service/wellness/bodyBattery/reports/daily", {
+              startDate,
+              endDate,
+            }),
+          shapeBodyBattery,
         ),
         fetchSection(() =>
           client.get(`/usersummary-service/stats/stress/daily/${startDate}/${endDate}`),
