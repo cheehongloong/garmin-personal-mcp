@@ -6,9 +6,12 @@ import {
   shapeActivityDetail,
   shapeActivityList,
   shapeBodyBattery,
+  shapeDailySummaries,
   shapeHeartRateDay,
   shapeProfile,
   shapeSleepDay,
+  shapeSleepRange,
+  shapeStress,
   stripPiiAndNoise,
 } from "./sanitize.js";
 
@@ -108,7 +111,7 @@ export function registerGarminTools(server: McpServer, options: RegisterGarminTo
     "list_activities",
     {
       description:
-        "List Garmin Connect activities, newest first. Returns trimmed summaries (type, distance, duration, pace/speed, HR, cadence, power, elevation, training load) with personal/device IDs stripped. Dates are YYYY-MM-DD.",
+        "List Garmin Connect activities, newest first. Returns a units map and trimmed activity summaries (type, distance, duration, ready-made pace/speed, HR, cadence, power, elevation, training load) with personal/device IDs stripped. Dates are YYYY-MM-DD.",
       inputSchema: z.object({
         limit: z
           .number()
@@ -161,7 +164,7 @@ export function registerGarminTools(server: McpServer, options: RegisterGarminTo
     "get_activity",
     {
       description:
-        "Detailed summary of one Garmin activity (distance, time, pace, HR, cadence, power, training effect, split summaries) with personal/device metadata stripped.",
+        "Detailed summary of one Garmin activity with an explicit units map and ready-made pace (distance, time, pace/speed, HR, cadence, power, training effect, split summaries), with personal/device metadata stripped.",
       inputSchema: activityIdInputSchema,
       annotations: READ_ONLY_ANNOTATIONS,
     },
@@ -192,25 +195,27 @@ export function registerGarminTools(server: McpServer, options: RegisterGarminTo
     "get_sleep",
     {
       description:
-        "Detailed sleep for one night (stages, score, duration, HRV, SpO2, respiration, insights). Defaults to today in the configured timezone.",
+        "Detailed sleep for one night (stages, score, duration, HRV, SpO2, respiration, insights). Returns {date, recorded: false} when no sleep was recorded. Defaults to today in the configured timezone.",
       inputSchema: singleDateInputSchema,
       annotations: READ_ONLY_ANNOTATIONS,
     },
-    async ({ calendar_date }) =>
-      runGarminCall(
+    async ({ calendar_date }) => {
+      const targetDate = calendar_date ?? getToday();
+      return runGarminCall(
         () =>
           client.get("/sleep-service/sleep/dailySleep", {
-            date: calendar_date ?? getToday(),
+            date: targetDate,
           }),
-        shapeSleepDay,
-      ),
+        (data) => shapeSleepDay(data, targetDate),
+      );
+    },
   );
 
   server.registerTool(
     "get_sleep_range",
     {
       description:
-        "Daily sleep summaries for a date range (default last 7 days ending today in the configured timezone).",
+        "Daily sleep summaries for a date range (default last 7 days ending today). Nights with no sleep recorded return {date, recorded: false}.",
       inputSchema: dateRangeInputSchema,
       annotations: READ_ONLY_ANNOTATIONS,
     },
@@ -218,11 +223,13 @@ export function registerGarminTools(server: McpServer, options: RegisterGarminTo
       const { startDate, endDate } = getRange(start_date, end_date);
       const rangeError = validateRangeOrder(startDate, endDate);
       if (rangeError) return errorText(rangeError);
-      return runGarminCall(() =>
-        client.get("/sleep-service/sleep/dailySleepSummariesByDate", {
-          startDate,
-          endDate,
-        }),
+      return runGarminCall(
+        () =>
+          client.get("/sleep-service/sleep/dailySleepSummariesByDate", {
+            startDate,
+            endDate,
+          }),
+        shapeSleepRange,
       );
     },
   );
@@ -270,7 +277,7 @@ export function registerGarminTools(server: McpServer, options: RegisterGarminTo
     "get_stress",
     {
       description:
-        "Daily stress stats for a date range (default last 7 days ending today in the configured timezone).",
+        "Daily stress stats for a date range (default last 7 days). Negative no-data sentinels (-1) are converted to null or {date, recorded: false}.",
       inputSchema: dateRangeInputSchema,
       annotations: READ_ONLY_ANNOTATIONS,
     },
@@ -278,8 +285,9 @@ export function registerGarminTools(server: McpServer, options: RegisterGarminTo
       const { startDate, endDate } = getRange(start_date, end_date);
       const rangeError = validateRangeOrder(startDate, endDate);
       if (rangeError) return errorText(rangeError);
-      return runGarminCall(() =>
-        client.get(`/usersummary-service/stats/stress/daily/${startDate}/${endDate}`),
+      return runGarminCall(
+        () => client.get(`/usersummary-service/stats/stress/daily/${startDate}/${endDate}`),
+        shapeStress,
       );
     },
   );
@@ -296,11 +304,13 @@ export function registerGarminTools(server: McpServer, options: RegisterGarminTo
       const { startDate, endDate } = getRange(start_date, end_date);
       const rangeError = validateRangeOrder(startDate, endDate);
       if (rangeError) return errorText(rangeError);
-      return runGarminCall(() =>
-        client.get("/usersummary-service/v2/dailysummaries", {
-          startDate,
-          endDate,
-        }),
+      return runGarminCall(
+        () =>
+          client.get("/usersummary-service/v2/dailysummaries", {
+            startDate,
+            endDate,
+          }),
+        shapeDailySummaries,
       );
     },
   );
@@ -362,7 +372,7 @@ export function registerGarminTools(server: McpServer, options: RegisterGarminTo
     "recovery_snapshot",
     {
       description:
-        "One call for 'should I train hard today?': fetches trimmed, PII-free sleep summaries, HRV, Body Battery, and stress in parallel for the last N days (default 7). Each section returns data or an error string.",
+        "One call for 'should I train hard today?': fetches trimmed, PII-free sleep summaries, HRV, Body Battery, and stress in parallel for the last N days (default 7). Unrecorded nights/stress days return {date, recorded: false}. Each section returns data or an error string.",
       inputSchema: z.object({
         days: z
           .number()
@@ -388,11 +398,13 @@ export function registerGarminTools(server: McpServer, options: RegisterGarminTo
       };
 
       const [sleep, hrv, bodyBattery, stress] = await Promise.all([
-        fetchSection(() =>
-          client.get("/sleep-service/sleep/dailySleepSummariesByDate", {
-            startDate,
-            endDate,
-          }),
+        fetchSection(
+          () =>
+            client.get("/sleep-service/sleep/dailySleepSummariesByDate", {
+              startDate,
+              endDate,
+            }),
+          shapeSleepRange,
         ),
         fetchSection(() => client.get(`/hrv-service/hrv/daily/${startDate}/${endDate}`)),
         fetchSection(
@@ -403,8 +415,9 @@ export function registerGarminTools(server: McpServer, options: RegisterGarminTo
             }),
           shapeBodyBattery,
         ),
-        fetchSection(() =>
-          client.get(`/usersummary-service/stats/stress/daily/${startDate}/${endDate}`),
+        fetchSection(
+          () => client.get(`/usersummary-service/stats/stress/daily/${startDate}/${endDate}`),
+          shapeStress,
         ),
       ]);
 

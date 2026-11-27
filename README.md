@@ -13,7 +13,7 @@ A self-hosted, single-user remote [Model Context Protocol (MCP)](https://modelco
 - **Remote & works on mobile:** Runs on Cloudflare Workers (Free tier suffices) over **Streamable HTTP** (`createMcpHandler`), so it works from `claude.ai` on desktop and the Claude mobile app.
 - **Official Garmin Personal API:** Uses Garmin's official read-only Personal API (`personal.connectapi.garmin.com`) — no reverse-engineered logins, session scraping, or unofficial libraries.
 - **Locked down to one user:** Wrapped with `@cloudflare/workers-oauth-provider` (OAuth 2.1 + PKCE `S256` + Dynamic Client Registration + Client ID Metadata Documents) delegating sign-in to GitHub OAuth with a **fail-closed single-user allowlist** (`ALLOWED_GITHUB_LOGIN`).
-- **Private & context-friendly by design:** Zero analytics, zero telemetry, zero logging of Garmin tokens or health payloads. Responses automatically strip personal and hardware identifiers (full name, display name, Garmin owner/profile IDs, profile image URLs, device IDs, and exact start/end GPS coordinates) and trim unused fields and raw per-minute arrays before returning compact JSON to Claude.
+- **Private & context-friendly by design:** Zero analytics, zero telemetry, zero logging of Garmin tokens or health payloads. Responses automatically strip personal and hardware identifiers (full name, display name, Garmin owner/profile IDs, profile image URLs, device IDs, and exact start/end GPS coordinates), trim unused fields and raw per-minute arrays, include an explicit `units` map and ready-made pace strings on activities, and normalize unworn sleep nights and Garmin's `-1` no-data stress sentinels to `{ date, recorded: false }`.
 
 ---
 

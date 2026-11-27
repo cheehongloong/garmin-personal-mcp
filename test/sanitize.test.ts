@@ -1,16 +1,29 @@
 import { describe, expect, it } from "vitest";
 import {
+  ACTIVITY_UNITS,
+  formatPace,
   shapeActivityDetail,
   shapeActivityList,
   shapeBodyBattery,
+  shapeDailySummaries,
   shapeHeartRateDay,
   shapeProfile,
   shapeSleepDay,
+  shapeSleepRange,
+  shapeStress,
   stripPiiAndNoise,
 } from "../src/sanitize.js";
 
-describe("response trimming and PII scrubbing", () => {
-  it("strips owner identity, profile image URLs, device IDs, GPS coords, and dive bloat from list_activities", () => {
+describe("response trimming, normalization, and PII scrubbing", () => {
+  it("formats ready-made pace strings accurately for running and swimming", () => {
+    expect(formatPace(1000 / 545, "running")).toBe("9:05 /km");
+    expect(formatPace(1000 / 300, "running")).toBe("5:00 /km");
+    expect(formatPace(100 / 112, "lap_swimming")).toBe("1:52 /100m");
+    expect(formatPace(0, "running")).toBeUndefined();
+    expect(formatPace(-2, "running")).toBeUndefined();
+  });
+
+  it("returns units map, ready-made pace, and strips PII/bloat from list_activities", () => {
     const bloatedRun = {
       activityId: 1001,
       activityName: "Morning Run",
@@ -26,7 +39,8 @@ describe("response trimming and PII scrubbing", () => {
       distance: 10000,
       duration: 2850,
       movingDuration: 2840,
-      averageSpeed: 3.51,
+      averageSpeed: 1000 / 285,
+      maxSpeed: 1000 / 240,
       averageHR: 152,
       maxHR: 171,
       averageRunningCadenceInStepsPerMinute: 176,
@@ -68,19 +82,24 @@ describe("response trimming and PII scrubbing", () => {
       autoCalcCalories: false,
     };
 
-    const rawSize = JSON.stringify([bloatedRun]).length;
-    const trimmed = shapeActivityList([bloatedRun]) as Array<Record<string, unknown>>;
-    const trimmedJson = JSON.stringify(trimmed);
+    const shaped = shapeActivityList([bloatedRun]) as {
+      units: typeof ACTIVITY_UNITS;
+      activities: Array<Record<string, unknown>>;
+    };
+    const trimmedJson = JSON.stringify(shaped.activities);
 
-    expect(trimmed).toHaveLength(1);
-    const item = trimmed[0];
+    expect(shaped.units).toEqual(ACTIVITY_UNITS);
+    expect(shaped.activities).toHaveLength(1);
+    const item = shaped.activities[0];
     expect(item).toBeDefined();
     expect(item?.activityId).toBe(1001);
     expect(item?.activityType).toBe("running");
     expect(item?.distance).toBe(10000);
+    expect(item?.averagePace).toBe("4:45 /km");
+    expect(item?.maxPace).toBe("4:00 /km");
     expect(item?.averageHR).toBe(152);
     expect(item?.hrTimeInZone_2).toBe(420);
-    expect(item?.hrTimeInZone_1).toBeUndefined(); // zero bucket omitted
+    expect(item?.hrTimeInZone_1).toBeUndefined();
     expect(item?.hrTimeInZone_5).toBeUndefined();
 
     // Verify PII & bloat completely stripped
@@ -101,12 +120,21 @@ describe("response trimming and PII scrubbing", () => {
       expect(trimmedJson).not.toContain(forbidden);
     }
 
-    // Significant payload size reduction
-    expect(trimmedJson.length).toBeLessThan(rawSize * 0.5);
+    // Activity payload itself shrinks by >50%
+    expect(trimmedJson.length).toBeLessThan(JSON.stringify([bloatedRun]).length * 0.5);
   });
 
-  it("preserves dive metrics on actual diving activities while still stripping PII", () => {
-    const diveActivity = {
+  it("adds km/h speed for cycling and preserves dive metrics on diving activities", () => {
+    const ride = {
+      activityId: 2001,
+      activityName: "Weekend Ride",
+      activityType: { typeKey: "road_biking" },
+      distance: 42000,
+      duration: 5400,
+      averageSpeed: 7.78, // ~28.0 km/h
+      maxSpeed: 12.5, // 45.0 km/h
+    };
+    const dive = {
       activityId: 2002,
       activityName: "Reef Dive",
       activityType: { typeKey: "single_gas_diving" },
@@ -117,15 +145,21 @@ describe("response trimming and PII scrubbing", () => {
       deviceId: 11223344,
     };
 
-    const trimmed = shapeActivityList([diveActivity]) as Array<Record<string, unknown>>;
-    expect(trimmed[0]?.activityType).toBe("single_gas_diving");
-    expect(trimmed[0]?.maxDepth).toBe(18.4);
-    expect(trimmed[0]?.bottomTime).toBe(2100);
-    expect(JSON.stringify(trimmed)).not.toContain("Jane Diver");
-    expect(JSON.stringify(trimmed)).not.toContain("deviceId");
+    const shaped = shapeActivityList([ride, dive]) as {
+      activities: Array<Record<string, unknown>>;
+    };
+    expect(shaped.activities[0]?.averageSpeedKmh).toBe(28);
+    expect(shaped.activities[0]?.maxSpeedKmh).toBe(45);
+    expect(shaped.activities[0]?.averagePace).toBeUndefined();
+
+    expect(shaped.activities[1]?.activityType).toBe("single_gas_diving");
+    expect(shaped.activities[1]?.maxDepth).toBe(18.4);
+    expect(shaped.activities[1]?.bottomTime).toBe(2100);
+    expect(JSON.stringify(shaped)).not.toContain("Jane Diver");
+    expect(JSON.stringify(shaped)).not.toContain("deviceId");
   });
 
-  it("trims get_activity detail responses and strips metadataDTO/userInfoDto/deviceIds", () => {
+  it("includes units and ready-made pace in get_activity while stripping metadataDTO/PII", () => {
     const rawDetail = {
       activityId: 1001,
       activityName: "Tempo Run",
@@ -149,7 +183,7 @@ describe("response trimming and PII scrubbing", () => {
         startTimeLocal: "2026-03-10T06:30:00.0",
         distance: 10000,
         duration: 2700,
-        averageSpeed: 3.7,
+        averageSpeed: 1000 / 270,
         averageHR: 162,
         maxHR: 178,
         trainingEffect: 3.8,
@@ -164,7 +198,7 @@ describe("response trimming and PII scrubbing", () => {
           noOfSplits: 1,
           duration: 2700,
           distance: 10000,
-          averageSpeed: 3.7,
+          averageSpeed: 1000 / 270,
           averageHR: 162,
           deviceId: 3456789012,
         },
@@ -174,17 +208,19 @@ describe("response trimming and PII scrubbing", () => {
     const shaped = shapeActivityDetail(rawDetail) as Record<string, unknown>;
     const text = JSON.stringify(shaped);
 
+    expect(shaped.units).toEqual(ACTIVITY_UNITS);
     expect(shaped.activityId).toBe(1001);
     expect(shaped.activityType).toBe("running");
-    expect(shaped.eventType).toBeUndefined(); // uncategorized omitted
-    expect((shaped.summary as Record<string, unknown>).averageHR).toBe(162);
+    expect(shaped.eventType).toBeUndefined();
+    expect((shaped.summary as Record<string, unknown>).averagePace).toBe("4:30 /km");
     expect(shaped.splitSummaries).toEqual([
       {
         splitType: "RWD_RUN",
         noOfSplits: 1,
         duration: 2700,
         distance: 10000,
-        averageSpeed: 3.7,
+        averageSpeed: 1000 / 270,
+        averagePace: "4:30 /km",
         averageHR: 162,
       },
     ]);
@@ -202,6 +238,122 @@ describe("response trimming and PII scrubbing", () => {
     ]) {
       expect(text).not.toContain(forbidden);
     }
+  });
+
+  it("collapses unworn sleep nights with generic sleepNeed boilerplate to { date, recorded: false }", () => {
+    const unwornDailySleep = {
+      dailySleepDTO: {
+        id: null,
+        userProfilePK: 99887766,
+        calendarDate: "2026-03-10",
+        sleepTimeSeconds: null,
+        deepSleepSeconds: null,
+        lightSleepSeconds: null,
+        remSleepSeconds: null,
+        sleepNeed: {
+          userProfilePk: 99887766,
+          calendarDate: "2026-03-10",
+          baseline: 480,
+          actual: 480,
+          feedback: "NO_CHANGE",
+        },
+        nextSleepNeed: {
+          calendarDate: "2026-03-11",
+          baseline: 480,
+          actual: 480,
+        },
+      },
+      remSleepData: false,
+      skinTempDataExists: false,
+    };
+
+    expect(shapeSleepDay(unwornDailySleep, "2026-03-10")).toEqual({
+      date: "2026-03-10",
+      recorded: false,
+    });
+    expect(shapeSleepDay(null, "2026-03-10")).toEqual({
+      date: "2026-03-10",
+      recorded: false,
+    });
+
+    const sleepRange = [
+      {
+        calendarDate: "2026-03-09",
+        userProfilePK: 99887766,
+        sleepTimeSeconds: 27600,
+        deepSleepSeconds: 5100,
+        sleepScores: { overall: { value: 82 } },
+      },
+      {
+        calendarDate: "2026-03-10",
+        userProfilePK: 99887766,
+        sleepTimeSeconds: null,
+        sleepNeed: { baseline: 480, actual: 480, feedback: "NO_CHANGE" },
+      },
+    ];
+
+    expect(shapeSleepRange(sleepRange)).toEqual([
+      {
+        calendarDate: "2026-03-09",
+        sleepTimeSeconds: 27600,
+        deepSleepSeconds: 5100,
+        sleepScores: { overall: { value: 82 } },
+      },
+      {
+        date: "2026-03-10",
+        recorded: false,
+      },
+    ]);
+  });
+
+  it("converts Garmin -1 stress sentinels to { date, recorded: false } or strips them on partial days", () => {
+    const rawStress = [
+      {
+        calendarDate: "2026-03-08",
+        values: {
+          overallStressLevel: -1,
+          highStressDuration: -1,
+        },
+      },
+      {
+        calendarDate: "2026-03-09",
+        overallStressLevel: -1,
+        maxStressLevel: -1,
+      },
+      {
+        calendarDate: "2026-03-10",
+        values: {
+          overallStressLevel: 26,
+          restStressDuration: 36000,
+          highStressDuration: -1,
+        },
+      },
+    ];
+
+    const shaped = shapeStress(rawStress);
+    expect(shaped).toEqual([
+      { date: "2026-03-08", recorded: false },
+      { date: "2026-03-09", recorded: false },
+      {
+        calendarDate: "2026-03-10",
+        values: {
+          overallStressLevel: 26,
+          restStressDuration: 36000,
+        },
+      },
+    ]);
+    expect(JSON.stringify(shaped)).not.toContain(":-1");
+
+    const summary = shapeDailySummaries([
+      {
+        calendarDate: "2026-03-10",
+        userProfileId: 99887766,
+        totalSteps: 8420,
+        averageStressLevel: -1,
+        maxStressLevel: -1,
+      },
+    ]);
+    expect(summary).toEqual([{ calendarDate: "2026-03-10", totalSteps: 8420 }]);
   });
 
   it("summarizes Body Battery arrays into daily stats and removes huge raw series", () => {
@@ -347,6 +499,7 @@ describe("response trimming and PII scrubbing", () => {
     expect(shapeBodyBattery(null)).toBeNull();
     expect(shapeHeartRateDay(null, "UTC")).toBeNull();
     expect(shapeSleepDay(null)).toBeNull();
+    expect(shapeStress(null)).toBeNull();
     expect(shapeProfile(null)).toBeNull();
   });
 });
