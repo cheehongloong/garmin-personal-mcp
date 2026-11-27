@@ -14,6 +14,7 @@
 - **Minimal OAuth state:** Upstream GitHub access tokens are used only during the callback to verify the GitHub login and are never stored in KV or encrypted token props.
 - **OAuth 2.1 + PKCE (`S256`):** Powered by `@cloudflare/workers-oauth-provider`, with browser-bound `__Host-` cookies and anti-framing headers (`X-Frame-Options: DENY`, `Content-Security-Policy: frame-ancestors 'none'`) on consent and upstream sign-in flows.
 - **Read-only scope:** Uses only Garmin's official read-only Personal API endpoints.
+- **Response PII scrubbing by default:** Tool responses strip personal identifiers (`ownerFullName`, `ownerDisplayName`, `displayName`, `ownerId`, `userProfilePK`, profile image URLs), hardware/device IDs (`deviceId`, `deviceApplicationInstallationId`, `serialNumber`), and exact start/end GPS coordinates before returning data to MCP clients.
 
 ## Reporting a Vulnerability
 
