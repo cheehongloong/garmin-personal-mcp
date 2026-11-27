@@ -7,7 +7,7 @@ import { registerGarminTools } from "./tools.js";
 import type { AuthProps, Env } from "./types.js";
 
 const SERVER_NAME = "garmin-personal-mcp";
-const SERVER_VERSION = "0.1.0";
+const SERVER_VERSION = "0.2.0";
 const MAX_CACHED_PROVIDERS = 16;
 
 const providerCache = new Map<string, OAuthProvider<Env>>();
