@@ -16,5 +16,12 @@ COOKIE_ENCRYPTION_KEY=replace-with-openssl-rand-hex-32
 # Required: exact GitHub username allowed to authorize (fails closed if unset)
 ALLOWED_GITHUB_LOGIN=your-github-username
 
+# Recommended: immutable numeric GitHub user ID (`gh api user --jq .id`)
+# ALLOWED_GITHUB_ID=12345678
+
+# Optional: comma-separated OAuth redirect hostnames (defaults to Claude + Gemini)
+# Add localhost,127.0.0.1 for local MCP Inspector/CLI testing, or "*" to allow any
+# ALLOWED_REDIRECT_HOSTS=claude.ai,oauth-redirect.googleusercontent.com,localhost,127.0.0.1
+
 # Optional: IANA timezone for "today" and default date ranges (default: UTC)
 TIMEZONE=UTC

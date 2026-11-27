@@ -7,12 +7,17 @@ import {
 } from "@cloudflare/workers-oauth-provider";
 import { describe, expect, it, vi } from "vitest";
 import {
+  checkClientRegistration,
   createGitHubAuthHandler,
   escapeHtml,
   isAllowedGitHubLogin,
+  isAllowedGitHubUser,
+  isAllowedRedirectUri,
+  resolveAllowedGitHubId,
   resolveAllowedGitHubLogin,
+  resolveAllowedRedirectHosts,
 } from "../src/auth/github.js";
-import { mcpApiHandler, resolveCanonicalResource } from "../src/index.js";
+import { enforceAuthRateLimit, mcpApiHandler, resolveCanonicalResource } from "../src/index.js";
 import type { AuthProps, Env } from "../src/types.js";
 
 function makeAuthRequest(overrides: Partial<AuthRequest> = {}): AuthRequest {
@@ -531,5 +536,240 @@ describe("MCP API handler defense-in-depth and resource resolution", () => {
     const body = await res.text();
     expect(body).toContain("list_activities");
     expect(body).toContain("recovery_snapshot");
+  });
+});
+
+describe("GitHub numeric ID pinning", () => {
+  it("parses ALLOWED_GITHUB_ID as disabled, valid, or invalid", () => {
+    expect(resolveAllowedGitHubId({})).toBeNull();
+    expect(resolveAllowedGitHubId({ ALLOWED_GITHUB_ID: "  " })).toBeNull();
+    expect(resolveAllowedGitHubId({ ALLOWED_GITHUB_ID: " 424242 " })).toBe(424242);
+    expect(resolveAllowedGitHubId({ ALLOWED_GITHUB_ID: "0" })).toBe("invalid");
+    expect(resolveAllowedGitHubId({ ALLOWED_GITHUB_ID: "-1" })).toBe("invalid");
+    expect(resolveAllowedGitHubId({ ALLOWED_GITHUB_ID: "12abc" })).toBe("invalid");
+    expect(resolveAllowedGitHubId({ ALLOWED_GITHUB_ID: "9999999999999999" })).toBe("invalid");
+  });
+
+  it("requires both login and pinned ID to match when ALLOWED_GITHUB_ID is set", () => {
+    const env = { ALLOWED_GITHUB_LOGIN: "runner-owner", ALLOWED_GITHUB_ID: "424242" };
+    expect(isAllowedGitHubUser({ login: "Runner-Owner", id: 424242 }, env)).toBe(true);
+    expect(isAllowedGitHubUser({ login: "runner-owner", id: 999 }, env)).toBe(false);
+    expect(isAllowedGitHubUser({ login: "runner-owner" }, env)).toBe(false);
+    expect(isAllowedGitHubUser({ login: "someone-else", id: 424242 }, env)).toBe(false);
+    expect(isAllowedGitHubUser(undefined, env)).toBe(false);
+    // Login-only mode stays backward compatible
+    expect(
+      isAllowedGitHubUser(
+        { login: "runner-owner", id: 1 },
+        { ALLOWED_GITHUB_LOGIN: "runner-owner" },
+      ),
+    ).toBe(true);
+    // Invalid pinned ID fails closed
+    expect(
+      isAllowedGitHubUser(
+        { login: "runner-owner", id: 424242 },
+        { ALLOWED_GITHUB_LOGIN: "runner-owner", ALLOWED_GITHUB_ID: "abc" },
+      ),
+    ).toBe(false);
+  });
+
+  it("fails closed with 503 when ALLOWED_GITHUB_ID is malformed", async () => {
+    const handler = createGitHubAuthHandler();
+    const env = makeEnv({ ALLOWED_GITHUB_ID: "not-a-number" });
+    const res = await handler.fetch(
+      new Request("https://garmin-mcp.example.workers.dev/authorize?client_id=test"),
+      env,
+      makeExecutionContext(),
+    );
+    expect(res.status).toBe(503);
+    expect(await res.text()).toContain("ALLOWED_GITHUB_ID");
+    expect(env.OAUTH_PROVIDER.parseAuthRequest).not.toHaveBeenCalled();
+  });
+
+  it("rejects a recycled username whose GitHub ID differs at /callback", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ access_token: "gho_squatter" }))
+      .mockResolvedValueOnce(Response.json({ id: 777, login: "runner-owner" }));
+    const oauth = makeMockOAuthHelpers();
+    const handler = createGitHubAuthHandler({ fetchFn: fetchMock });
+
+    const res = await handler.fetch(
+      new Request(
+        "https://garmin-mcp.example.workers.dev/callback?code=gh-code&state=upstream-state-999",
+      ),
+      makeEnv({
+        OAUTH_PROVIDER: oauth,
+        ALLOWED_GITHUB_LOGIN: "runner-owner",
+        ALLOWED_GITHUB_ID: "424242",
+      }),
+      makeExecutionContext(),
+    );
+
+    expect(res.status).toBe(403);
+    expect(oauth.completeAuthorization).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 on /mcp when token props carry a different GitHub ID", async () => {
+    const res = await mcpApiHandler.fetch(
+      new Request("http://localhost:8787/mcp", { method: "POST", body: "{}" }),
+      makeEnv({ ALLOWED_GITHUB_LOGIN: "runner-owner", ALLOWED_GITHUB_ID: "424242" }),
+      makeExecutionContext({ githubLogin: "runner-owner", githubId: 777 }),
+    );
+    expect(res.status).toBe(403);
+  });
+});
+
+describe("redirect host allowlist", () => {
+  it("defaults to Claude and Gemini, supports custom lists and '*' wildcard", () => {
+    expect([...(resolveAllowedRedirectHosts({}) ?? [])]).toEqual([
+      "claude.ai",
+      "oauth-redirect.googleusercontent.com",
+    ]);
+    expect([
+      ...(resolveAllowedRedirectHosts({ ALLOWED_REDIRECT_HOSTS: " Claude.ai , localhost " }) ?? []),
+    ]).toEqual(["claude.ai", "localhost"]);
+    expect(resolveAllowedRedirectHosts({ ALLOWED_REDIRECT_HOSTS: "*" })).toBeNull();
+  });
+
+  it("matches exact hostnames only", () => {
+    expect(isAllowedRedirectUri("https://claude.ai/api/mcp/auth_callback", {})).toBe(true);
+    expect(
+      isAllowedRedirectUri("https://oauth-redirect.googleusercontent.com/r/custom-mcp", {}),
+    ).toBe(true);
+    expect(isAllowedRedirectUri("https://evil.example/cb", {})).toBe(false);
+    expect(isAllowedRedirectUri("https://claude.ai.evil.example/cb", {})).toBe(false);
+    expect(isAllowedRedirectUri("https://evil-claude.ai/cb", {})).toBe(false);
+    expect(isAllowedRedirectUri("http://127.0.0.1:8976/callback", {})).toBe(false);
+    expect(isAllowedRedirectUri("not a url", {})).toBe(false);
+    expect(isAllowedRedirectUri(42, {})).toBe(false);
+    expect(
+      isAllowedRedirectUri("http://127.0.0.1:8976/callback", {
+        ALLOWED_REDIRECT_HOSTS: "claude.ai,127.0.0.1",
+      }),
+    ).toBe(true);
+    expect(
+      isAllowedRedirectUri("https://anything.example/cb", { ALLOWED_REDIRECT_HOSTS: "*" }),
+    ).toBe(true);
+  });
+
+  it("rejects /authorize for a non-allowlisted redirect before any consent state is written", async () => {
+    const oauth = makeMockOAuthHelpers({
+      parseAuthRequest: vi
+        .fn()
+        .mockResolvedValue(makeAuthRequest({ redirectUri: "https://evil.example/steal" })),
+      isConsentRemembered: vi.fn().mockResolvedValue(true),
+    });
+    const handler = createGitHubAuthHandler();
+    const res = await handler.fetch(
+      new Request("https://garmin-mcp.example.workers.dev/authorize?client_id=attacker"),
+      makeEnv({ OAUTH_PROVIDER: oauth }),
+      makeExecutionContext(),
+    );
+
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("evil.example");
+    expect(oauth.isConsentRemembered).not.toHaveBeenCalled();
+    expect(oauth.beginConsent).not.toHaveBeenCalled();
+    expect(oauth.beginUpstream).not.toHaveBeenCalled();
+  });
+
+  it("refuses to complete authorization at /callback for a non-allowlisted redirect", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ access_token: "gho_ephemeral_token" }))
+      .mockResolvedValueOnce(Response.json({ id: 424242, login: "runner-owner" }));
+    const oauth = makeMockOAuthHelpers({
+      finishUpstream: vi.fn().mockResolvedValue({
+        request: makeAuthRequest({ redirectUri: "https://evil.example/steal" }),
+        data: { codeVerifier: "pkce-verifier-value" },
+        headers: new Headers(),
+      }),
+    });
+    const handler = createGitHubAuthHandler({ fetchFn: fetchMock });
+    const res = await handler.fetch(
+      new Request(
+        "https://garmin-mcp.example.workers.dev/callback?code=gh-code&state=upstream-state-999",
+      ),
+      makeEnv({ OAUTH_PROVIDER: oauth }),
+      makeExecutionContext(),
+    );
+
+    expect(res.status).toBe(400);
+    expect(oauth.completeAuthorization).not.toHaveBeenCalled();
+  });
+
+  it("gates dynamic client registration on at least one allowlisted redirect URI", () => {
+    expect(
+      checkClientRegistration({ redirect_uris: ["https://claude.ai/api/mcp/auth_callback"] }, {}),
+    ).toBeUndefined();
+    expect(
+      checkClientRegistration(
+        {
+          redirect_uris: [
+            "https://oauth-redirect-sandbox.googleusercontent.com/r/x",
+            "https://oauth-redirect.googleusercontent.com/r/x",
+          ],
+        },
+        {},
+      ),
+    ).toBeUndefined();
+    expect(checkClientRegistration({ redirect_uris: ["https://evil.example/cb"] }, {})).toEqual(
+      expect.objectContaining({ code: "invalid_redirect_uri", status: 400 }),
+    );
+    expect(checkClientRegistration({}, {})).toEqual(
+      expect.objectContaining({ code: "invalid_redirect_uri" }),
+    );
+    expect(
+      checkClientRegistration(
+        { redirect_uris: ["https://evil.example/cb"] },
+        { ALLOWED_REDIRECT_HOSTS: "*" },
+      ),
+    ).toBeUndefined();
+  });
+});
+
+describe("auth endpoint rate limiting", () => {
+  const makeLimiter = (success: boolean) =>
+    ({ limit: vi.fn().mockResolvedValue({ success }) }) as unknown as RateLimit;
+
+  it("returns 429 with Retry-After when the per-IP limit is exceeded", async () => {
+    const limiter = makeLimiter(false);
+    const res = await enforceAuthRateLimit(
+      new Request("https://garmin-mcp.example.workers.dev/oauth/register", {
+        method: "POST",
+        headers: { "CF-Connecting-IP": "203.0.113.7" },
+      }),
+      { AUTH_RATE_LIMITER: limiter },
+    );
+    expect(res?.status).toBe(429);
+    expect(res?.headers.get("Retry-After")).toBe("60");
+    expect(limiter.limit).toHaveBeenCalledWith({ key: "auth:203.0.113.7" });
+  });
+
+  it("passes through allowed requests, non-auth paths, and missing/erroring limiters", async () => {
+    const ok = makeLimiter(true);
+    expect(
+      await enforceAuthRateLimit(new Request("https://x.example/authorize"), {
+        AUTH_RATE_LIMITER: ok,
+      }),
+    ).toBeNull();
+
+    const blocked = makeLimiter(false);
+    expect(
+      await enforceAuthRateLimit(new Request("https://x.example/mcp"), {
+        AUTH_RATE_LIMITER: blocked,
+      }),
+    ).toBeNull();
+    expect(blocked.limit).not.toHaveBeenCalled();
+
+    expect(await enforceAuthRateLimit(new Request("https://x.example/authorize"), {})).toBeNull();
+
+    const broken = { limit: vi.fn().mockRejectedValue(new Error("boom")) } as unknown as RateLimit;
+    expect(
+      await enforceAuthRateLimit(new Request("https://x.example/oauth/token"), {
+        AUTH_RATE_LIMITER: broken,
+      }),
+    ).toBeNull();
   });
 });

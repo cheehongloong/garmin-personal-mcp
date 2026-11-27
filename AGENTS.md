@@ -40,9 +40,9 @@ When a user asks you to set up or deploy `garmin-personal-mcp` for them, follow 
 - If Wrangler prompts *"Would you like Wrangler to add it on your behalf?"*, answer **No** (`n`) so tracked `wrangler.jsonc` stays clean.
 - Copy the created KV namespace `id`.
 
-#### 4. Gather 2 non-secret settings & write gitignored `wrangler.local.jsonc`
+#### 4. Gather non-secret settings & write gitignored `wrangler.local.jsonc`
 - Ask the user to confirm:
-  1. Their exact **GitHub username** (`ALLOWED_GITHUB_LOGIN`) — if `gh` CLI is logged in, you can check `gh api user --jq .login` and ask them to confirm it's their personal account.
+  1. Their exact **GitHub username** (`ALLOWED_GITHUB_LOGIN`) and numeric **GitHub user ID** (`ALLOWED_GITHUB_ID`) — if `gh` CLI is logged in, you can check `gh api user --jq '{login, id}'` and ask them to confirm it's their personal account.
   2. Their **IANA timezone** (`TIMEZONE`) — detect their machine's timezone (e.g. `node -e "console.log(Intl.DateTimeFormat().resolvedOptions().timeZone)"`) and confirm it with them.
 - Create gitignored `wrangler.local.jsonc`:
   ```jsonc
@@ -54,6 +54,8 @@ When a user asks you to set up or deploy `garmin-personal-mcp` for them, follow 
     "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
     "vars": {
       "ALLOWED_GITHUB_LOGIN": "<exact-github-username>",
+      "ALLOWED_GITHUB_ID": "<numeric-github-user-id>",
+      "ALLOWED_REDIRECT_HOSTS": "claude.ai,oauth-redirect.googleusercontent.com",
       "TIMEZONE": "<IANA-timezone>",
       "GARMIN_BASE_URL": "https://personal.connectapi.garmin.com"
     },
@@ -61,6 +63,13 @@ When a user asks you to set up or deploy `garmin-personal-mcp` for them, follow 
       {
         "binding": "OAUTH_KV",
         "id": "<KV_NAMESPACE_ID>"
+      }
+    ],
+    "ratelimits": [
+      {
+        "name": "AUTH_RATE_LIMITER",
+        "namespace_id": "1001",
+        "simple": { "limit": 20, "period": 60 }
       }
     ]
   }

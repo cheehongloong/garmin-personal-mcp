@@ -10,7 +10,9 @@
 
 ## Security Architecture Highlights
 
-- **Single-user allowlist (fail-closed):** Authorization and `/mcp` requests fail closed unless `ALLOWED_GITHUB_LOGIN` is set to a single valid GitHub username. Any other GitHub account is rejected with HTTP `403` before an OAuth grant is issued.
+- **Single-user allowlist (fail-closed):** Authorization and `/mcp` requests fail closed unless `ALLOWED_GITHUB_LOGIN` is set to a single valid GitHub username. Setting `ALLOWED_GITHUB_ID` additionally pins the immutable numeric GitHub user ID so a renamed/recycled username can never gain access. Any other GitHub account is rejected with HTTP `403` before an OAuth grant is issued.
+- **Redirect host allowlist (anti-consent-phishing):** Dynamic client registration (`/oauth/register`), `/authorize`, and `/callback` restrict OAuth redirects to `ALLOWED_REDIRECT_HOSTS` (defaulting to `claude.ai` and `oauth-redirect.googleusercontent.com`), blocking attacker-registered or attacker-hosted clients from receiving tokens.
+- **Auth endpoint rate limiting:** A free Cloudflare Workers Rate Limiting binding (`AUTH_RATE_LIMITER`) throttles unauthenticated OAuth endpoints (`/authorize`, `/callback`, `/oauth/register`, `/oauth/token`) per client IP to protect the Workers KV Free write quota.
 - **Minimal OAuth state:** Upstream GitHub access tokens are used only during the callback to verify the GitHub login and are never stored in KV or encrypted token props.
 - **OAuth 2.1 + PKCE (`S256`):** Powered by `@cloudflare/workers-oauth-provider`, with browser-bound `__Host-` cookies and anti-framing headers (`X-Frame-Options: DENY`, `Content-Security-Policy: frame-ancestors 'none'`) on consent and upstream sign-in flows.
 - **Read-only scope:** Uses only Garmin's official read-only Personal API endpoints.

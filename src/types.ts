@@ -19,8 +19,13 @@ export interface Env {
   GITHUB_CLIENT_SECRET: string;
   COOKIE_ENCRYPTION_KEY?: string;
 
+  // Workers Rate Limiting binding (`ratelimits` in wrangler.jsonc); optional
+  AUTH_RATE_LIMITER?: RateLimit;
+
   // Worker vars (`wrangler.jsonc`)
   ALLOWED_GITHUB_LOGIN?: string;
+  ALLOWED_GITHUB_ID?: string;
+  ALLOWED_REDIRECT_HOSTS?: string;
   TIMEZONE?: string;
   GARMIN_BASE_URL?: string;
   MCP_RESOURCE?: string;

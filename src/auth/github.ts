@@ -20,6 +20,15 @@ const USER_AGENT = "garmin-personal-mcp";
  */
 const GITHUB_LOGIN_PATTERN = /^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38}$/;
 
+/** Positive integer GitHub user ID (no leading zeros). */
+const GITHUB_ID_PATTERN = /^[1-9]\d{0,15}$/;
+
+/** Redirect hosts used by Claude (web/mobile) and Gemini custom MCP connectors. */
+export const DEFAULT_ALLOWED_REDIRECT_HOSTS = [
+  "claude.ai",
+  "oauth-redirect.googleusercontent.com",
+] as const;
+
 const MIN_COOKIE_SECRET_LENGTH = 32;
 const DEFAULT_SCOPES = ["garmin:read"];
 
@@ -68,6 +77,115 @@ export function isAllowedGitHubLogin(
   }
   const normalized = login.trim().toLowerCase();
   return normalized.length > 0 && normalized === allowed;
+}
+
+/**
+ * Returns the pinned numeric GitHub user ID, `null` when ALLOWED_GITHUB_ID is unset or blank
+ * (ID pinning disabled), or `"invalid"` when it is set to anything other than a positive integer.
+ * Pinning the immutable ID protects against GitHub username changes/recycling.
+ */
+export function resolveAllowedGitHubId(
+  env: Pick<Env, "ALLOWED_GITHUB_ID">,
+): number | null | "invalid" {
+  const raw = env.ALLOWED_GITHUB_ID?.trim();
+  if (!raw) {
+    return null;
+  }
+  if (!GITHUB_ID_PATTERN.test(raw)) {
+    return "invalid";
+  }
+  const id = Number(raw);
+  return Number.isSafeInteger(id) ? id : "invalid";
+}
+
+/**
+ * Fail-closed check for a GitHub identity: the login must match ALLOWED_GITHUB_LOGIN and,
+ * when ALLOWED_GITHUB_ID is configured, the numeric ID must match it too.
+ */
+export function isAllowedGitHubUser(
+  user: { login?: string | null; id?: number | null } | undefined,
+  env: Pick<Env, "ALLOWED_GITHUB_LOGIN" | "ALLOWED_GITHUB_ID">,
+): boolean {
+  if (!user || !isAllowedGitHubLogin(user.login, env)) {
+    return false;
+  }
+  const pinnedId = resolveAllowedGitHubId(env);
+  if (pinnedId === "invalid") {
+    return false;
+  }
+  if (pinnedId === null) {
+    return true;
+  }
+  return user.id === pinnedId;
+}
+
+/**
+ * Returns the set of allowed OAuth redirect hostnames, or `null` when any host is allowed
+ * (ALLOWED_REDIRECT_HOSTS contains `*`). Defaults to Claude and Gemini when unset.
+ */
+export function resolveAllowedRedirectHosts(
+  env: Pick<Env, "ALLOWED_REDIRECT_HOSTS">,
+): ReadonlySet<string> | null {
+  const raw = env.ALLOWED_REDIRECT_HOSTS?.trim();
+  if (!raw) {
+    return new Set(DEFAULT_ALLOWED_REDIRECT_HOSTS);
+  }
+  const hosts = raw
+    .split(",")
+    .map((host) => host.trim().toLowerCase())
+    .filter((host) => host.length > 0);
+  if (hosts.includes("*")) {
+    return null;
+  }
+  return new Set(hosts);
+}
+
+/**
+ * True when `redirectUri` is a parseable URL whose exact hostname is allowlisted.
+ * Blocks consent-phishing via attacker-registered (DCR) or attacker-hosted (CIMD) clients.
+ */
+export function isAllowedRedirectUri(
+  redirectUri: unknown,
+  env: Pick<Env, "ALLOWED_REDIRECT_HOSTS">,
+): boolean {
+  if (typeof redirectUri !== "string") {
+    return false;
+  }
+  let hostname: string;
+  try {
+    hostname = new URL(redirectUri).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  const allowed = resolveAllowedRedirectHosts(env);
+  if (allowed === null) {
+    return true;
+  }
+  return hostname.length > 0 && allowed.has(hostname);
+}
+
+/**
+ * Dynamic Client Registration gate: rejects registrations where no redirect URI is allowlisted,
+ * so junk clients are never stored in KV. Uses `.some()` because legitimate multi-env clients
+ * (e.g. Google Gemini) register sandbox/test URIs alongside production; `/authorize` and
+ * `/callback` still enforce `isAllowedRedirectUri` on the exact redirect URI used.
+ */
+export function checkClientRegistration(
+  clientMetadata: Record<string, unknown>,
+  env: Pick<Env, "ALLOWED_REDIRECT_HOSTS">,
+): { code: string; description: string; status: number } | undefined {
+  if (resolveAllowedRedirectHosts(env) === null) {
+    return undefined;
+  }
+  const redirectUris = clientMetadata.redirect_uris;
+  if (Array.isArray(redirectUris) && redirectUris.some((uri) => isAllowedRedirectUri(uri, env))) {
+    return undefined;
+  }
+  return {
+    code: "invalid_redirect_uri",
+    description: "No redirect_uri is allowed by this server's ALLOWED_REDIRECT_HOSTS.",
+    status: 400,
+  };
 }
 
 export function escapeHtml(value: string): string {
@@ -121,6 +239,9 @@ function getRememberOption(
 function validateAuthConfig(env: Env): string | null {
   if (!resolveAllowedGitHubLogin(env)) {
     return "This server is not configured: ALLOWED_GITHUB_LOGIN must be set to a single GitHub username.";
+  }
+  if (resolveAllowedGitHubId(env) === "invalid") {
+    return "This server is not configured: ALLOWED_GITHUB_ID must be a numeric GitHub user ID.";
   }
   if (!env.GITHUB_CLIENT_ID?.trim() || !env.GITHUB_CLIENT_SECRET?.trim()) {
     return "This server is not configured: GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET must be set.";
@@ -242,6 +363,24 @@ function renderErrorPage(title: string, heading: string, message: string): strin
     title,
     `<h1>${escapeHtml(heading)}</h1>
 <p>${escapeHtml(message)}</p>`,
+  );
+}
+
+function redirectNotAllowedResponse(redirectUri: string, headers?: Headers): Response {
+  let host = redirectUri;
+  try {
+    host = new URL(redirectUri).hostname || redirectUri;
+  } catch {
+    // Keep raw value; it is HTML-escaped by renderErrorPage.
+  }
+  return htmlResponse(
+    renderErrorPage(
+      "Client Not Allowed",
+      "Redirect destination not allowed",
+      `This server only issues access to its configured MCP clients. The requesting application's redirect host (${host}) is not listed in ALLOWED_REDIRECT_HOSTS.`,
+    ),
+    400,
+    headers,
   );
 }
 
@@ -373,6 +512,10 @@ export function createGitHubAuthHandler(
       try {
         if (url.pathname === "/authorize" && request.method === "GET") {
           const authRequest = await env.OAUTH_PROVIDER.parseAuthRequest(request);
+          // Reject before any consent state is written or shown.
+          if (!isAllowedRedirectUri(authRequest.redirectUri, env)) {
+            return redirectNotAllowedResponse(authRequest.redirectUri);
+          }
           const remember = getRememberOption(env);
           if (
             remember &&
@@ -414,6 +557,9 @@ export function createGitHubAuthHandler(
             handle,
             remember ? { remember } : undefined,
           );
+          if (!isAllowedRedirectUri(approved.request.redirectUri, env)) {
+            return redirectNotAllowedResponse(approved.request.redirectUri, approved.headers);
+          }
           return await startGitHubUpstream(request, env, approved.request, approved.headers);
         }
 
@@ -485,7 +631,7 @@ export function createGitHubAuthHandler(
             );
           }
 
-          if (!isAllowedGitHubLogin(githubUser.login, env)) {
+          if (!isAllowedGitHubUser(githubUser, env)) {
             return htmlResponse(
               renderErrorPage(
                 "Access Denied",
@@ -495,6 +641,11 @@ export function createGitHubAuthHandler(
               403,
               headers,
             );
+          }
+
+          // Defense in depth: never issue a code to a non-allowlisted redirect.
+          if (!isAllowedRedirectUri(original.redirectUri, env)) {
+            return redirectNotAllowedResponse(original.redirectUri, headers);
           }
 
           const grantedScope = original.scope.length > 0 ? original.scope : DEFAULT_SCOPES;

@@ -130,6 +130,8 @@ yarn wrangler secret put COOKIE_ENCRYPTION_KEY -c wrangler.local.jsonc
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `ALLOWED_GITHUB_LOGIN` | **Yes** | `""` | Exact single GitHub username allowed to authorize. **Fails closed (`503`/`403`) if unset or invalid.** |
+| `ALLOWED_GITHUB_ID` | Recommended | `""` | Your immutable numeric GitHub user ID (`gh api user --jq .id`). When set, both username and ID must match, preventing access if your username is ever renamed and reclaimed. |
+| `ALLOWED_REDIRECT_HOSTS` | No | `claude.ai,oauth-redirect.googleusercontent.com` | Comma-separated OAuth redirect hostnames allowed to register and authorize (blocks consent phishing). Add e.g. `localhost,127.0.0.1` for local clients, or `*` to allow any. |
 | `TIMEZONE` | No | `"UTC"` | IANA timezone used for "today" and default 7-day ranges (Workers run in UTC). |
 | `GARMIN_BASE_URL` | No | `https://personal.connectapi.garmin.com` | Official Garmin Personal API base URL. |
 | `MCP_RESOURCE` | No | Derived from request origin | Optional override for the canonical RFC 9728 MCP resource URL (defaults to `https://<host>/mcp`). |
